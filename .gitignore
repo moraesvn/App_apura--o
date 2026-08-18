@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Segredos e variáveis de ambiente
+.env
+.env.*
+!.env.example
+
+# Planilhas e dados locais (não enviar ao Git)
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.ods
+
+# IDEs e SO
+.idea/
+.vscode/
+.cursor/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
