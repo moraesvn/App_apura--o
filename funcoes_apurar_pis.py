@@ -1,9 +1,142 @@
 import pandas as pd
 from babel.numbers import format_currency
 
+ALIQUOTA_PIS = 0.0165
+ALIQUOTA_COFINS = 0.0760
+
+CATEGORIAS_CREDITO = [
+    'Intermediação de venda',
+    'Publicidade',
+    'Serviço de operador logístico',
+]
+
 # FUNÇÃO PARA FORMATAR MOEDA BRASILEIRA
 def formatar_moeda(valor):
     return format_currency(valor, 'BRL', locale='pt_BR')
+
+
+def creditar_pis_cofins(base):
+    base = float(base or 0)
+    pis = round(base * ALIQUOTA_PIS, 2)
+    cofins = round(base * ALIQUOTA_COFINS, 2)
+    return pis, cofins
+
+
+def calcular_creditos_categorias(bases_sp, bases_sc):
+    por_categoria = {}
+    detalhe_uf = {}
+    extra_pis = 0.0
+    extra_cofins = 0.0
+    extra_bruto = 0.0
+
+    for categoria in CATEGORIAS_CREDITO:
+        base_sp = float(bases_sp.get(categoria, 0) or 0)
+        base_sc = float(bases_sc.get(categoria, 0) or 0)
+        pis_sp, cofins_sp = creditar_pis_cofins(base_sp)
+        pis_sc, cofins_sc = creditar_pis_cofins(base_sc)
+        bruto = round(base_sp + base_sc, 2)
+        pis = round(pis_sp + pis_sc, 2)
+        cofins = round(cofins_sp + cofins_sc, 2)
+
+        por_categoria[categoria] = {'bruto': bruto, 'pis': pis, 'cofins': cofins}
+        detalhe_uf[categoria] = {
+            'SP': {'base': base_sp, 'pis': pis_sp, 'cofins': cofins_sp},
+            'SC': {'base': base_sc, 'pis': pis_sc, 'cofins': cofins_sc},
+        }
+        extra_pis += pis
+        extra_cofins += cofins
+        extra_bruto += bruto
+
+    return (
+        por_categoria,
+        round(extra_pis, 2),
+        round(extra_cofins, 2),
+        round(extra_bruto, 2),
+        detalhe_uf,
+    )
+
+
+def rotulo_saldo(imposto, valor):
+    if valor >= 0:
+        return f'{imposto} — crédito a transportar'
+    return f'{imposto} — valor a recolher (guia)'
+
+
+def valor_exibicao_saldo(valor):
+    return formatar_moeda(abs(valor))
+
+
+def montar_resumo_pis(resultado, por_categoria):
+    cte_total_pis = resultado['cte_total_pis']
+    cte_total_cofins = resultado['cte_total_cofins']
+    valor_total_cte = resultado['valor_total_cte']
+    estorno_pis_mes = resultado['estorno_pis_mes']
+    estorno_cofins_mes = resultado['estorno_cofins_mes']
+    devolucoes_mes = resultado['devolucoes_mes']
+    total_pis = resultado['total_pis']
+    total_cofins = resultado['total_cofins']
+    total_bruto_consolidado = resultado['total_bruto_consolidado']
+    pis_mes = resultado['pis_mes']
+    cofins_mes = resultado['cofins_mes']
+    mes_receita_bruta = resultado['mes_receita_bruta']
+
+    extra_pis = sum(item['pis'] for item in por_categoria.values())
+    extra_cofins = sum(item['cofins'] for item in por_categoria.values())
+    extra_bruto = sum(item['bruto'] for item in por_categoria.values())
+
+    total_creditado_bruto = total_bruto_consolidado + valor_total_cte + devolucoes_mes + extra_bruto
+    total_creditado_pis = total_pis + cte_total_pis + estorno_pis_mes + extra_pis
+    total_creditado_cofins = total_cofins + cte_total_cofins + estorno_cofins_mes + extra_cofins
+
+    saldo_final_pis = round(total_creditado_pis - pis_mes, 2)
+    saldo_final_cofins = round(total_creditado_cofins - cofins_mes, 2)
+    saldo_final_bruto = round(total_creditado_bruto - mes_receita_bruta, 2)
+
+    indices = ['Crédito: CTEs', 'Crédito: Devoluções']
+    coluna_pis = [cte_total_pis, estorno_pis_mes]
+    coluna_cofins = [cte_total_cofins, estorno_cofins_mes]
+    coluna_total_bruto = [valor_total_cte, devolucoes_mes]
+
+    for categoria in CATEGORIAS_CREDITO:
+        item = por_categoria[categoria]
+        indices.append(f'Crédito: {categoria}')
+        coluna_pis.append(item['pis'])
+        coluna_cofins.append(item['cofins'])
+        coluna_total_bruto.append(item['bruto'])
+
+    indices.append('Total Creditado')
+    coluna_pis.append(total_creditado_pis)
+    coluna_cofins.append(total_creditado_cofins)
+    coluna_total_bruto.append(total_creditado_bruto)
+
+    tabela_pis_creditos = pd.DataFrame(
+        {'PIS': coluna_pis, 'COFINS': coluna_cofins, 'VALOR TOTAL BRUTO': coluna_total_bruto},
+        columns=['PIS', 'COFINS', 'VALOR TOTAL BRUTO'],
+        index=indices,
+    )
+    tabela_pis_creditos = tabela_pis_creditos.map(formatar_moeda)
+
+    tabela_debito_pis = pd.DataFrame(
+        {'PIS': pis_mes, 'COFINS': cofins_mes, 'VALOR TOTAL BRUTO': mes_receita_bruta},
+        columns=['PIS', 'COFINS', 'VALOR TOTAL BRUTO'],
+        index=['Débito: Nfe venda'],
+    )
+    tabela_debito_pis = tabela_debito_pis.map(formatar_moeda)
+
+    tabela_saldo_final = pd.DataFrame(
+        {'PIS': saldo_final_pis, 'COFINS': saldo_final_cofins, 'VALOR TOTAL BRUTO': saldo_final_bruto},
+        columns=['PIS', 'COFINS', 'VALOR TOTAL BRUTO'],
+        index=['Saldo do mês'],
+    )
+    tabela_saldo_final = tabela_saldo_final.map(formatar_moeda)
+
+    return (
+        tabela_pis_creditos,
+        tabela_debito_pis,
+        tabela_saldo_final,
+        saldo_final_pis,
+        saldo_final_cofins,
+    )
 
 # FUNÇÃO TRATAR CTE PARA APURAR PIS E COFINS
 def tratar_cte_pis_cofins(planilhacte):
@@ -180,57 +313,21 @@ def apurar_pis(planilhacte, planilha_pis_cofins, planilha, mes):
     tabela_dinamica, total_bruto_consolidado, total_pis, total_cofins = tratar_entrada_pis_cofins(planilha_pis_cofins)
     mes_receita_bruta, devolucoes_mes, pis_mes, cofins_mes, estorno_pis_mes, estorno_cofins_mes = tratar_dre_pis_cofins(planilha, mes)
 
-    total_creditado_bruto = total_bruto_consolidado + valor_total_cte + devolucoes_mes
-    total_creditado_pis = total_pis + cte_total_pis + estorno_pis_mes 
-    total_creditado_cofins = total_cofins + cte_total_cofins + estorno_cofins_mes
-
-    saldo_final_pis = total_creditado_pis - pis_mes
-    saldo_final_cofins = total_creditado_cofins - cofins_mes
-    saldo_final_bruto = total_creditado_bruto - mes_receita_bruta
-
-    #CRIANDO O DATAFRAME CREDITOS PARA RESULTADOS
-    # Definindo os nomes das colunas
-    colunas = ['PIS', 'COFINS', 'VALOR TOTAL BRUTO']
-
-    # DEFININDO OS VALORES DA TABELA
-    coluna_total_bruto = [valor_total_cte, devolucoes_mes, total_creditado_bruto]
-    coluna_pis = [cte_total_pis, estorno_pis_mes, total_creditado_pis]
-    coluna_cofins = [cte_total_cofins, estorno_cofins_mes, total_creditado_cofins]
-
-
-    #CRIANDO O DATAFRAME CREDITOS PARA RESULTADOS
-    creditos_pis = { 
-    'PIS': coluna_pis,
-    'COFINS': coluna_cofins,
-    'VALOR TOTAL BRUTO': coluna_total_bruto
+    return {
+        'valor_total_cte': valor_total_cte,
+        'cte_total_pis': cte_total_pis,
+        'cte_total_cofins': cte_total_cofins,
+        'tabela_dinamica': tabela_dinamica,
+        'total_bruto_consolidado': total_bruto_consolidado,
+        'total_pis': total_pis,
+        'total_cofins': total_cofins,
+        'mes_receita_bruta': mes_receita_bruta,
+        'devolucoes_mes': devolucoes_mes,
+        'pis_mes': pis_mes,
+        'cofins_mes': cofins_mes,
+        'estorno_pis_mes': estorno_pis_mes,
+        'estorno_cofins_mes': estorno_cofins_mes,
     }
-
-    tabela_pis_creditos = pd.DataFrame(creditos_pis, columns=colunas, index= ['Crédito: CTEs', 'Crédito: Devoluções', 'Total Creditado'])
-    tabela_pis_creditos = tabela_pis_creditos.applymap(formatar_moeda)
-
-    #CRIANDO O DATAFRAME DEBITOS PARA RESULTADOS
-    debito_pis = {
-    'PIS': pis_mes,
-    'COFINS': cofins_mes,
-    'VALOR TOTAL BRUTO': mes_receita_bruta
-    }
-
-    tabela_debito_pis = pd.DataFrame(debito_pis, columns= ['PIS', 'COFINS', 'VALOR TOTAL BRUTO'], index= ['Débito: Nfe venda'])
-    tabela_debito_pis = tabela_debito_pis.applymap(formatar_moeda)
-
-    #CRIANDO O DATAFRAME SALDO FINAL
-    saldo_final = {
-    'PIS': saldo_final_pis,
-    'COFINS': saldo_final_cofins,
-    'VALOR TOTAL BRUTO': saldo_final_bruto
-    }
-
-    tabela_saldo_final = pd.DataFrame(saldo_final, columns= ['PIS', 'COFINS', 'VALOR TOTAL BRUTO'], index= ['Saldo Final'])
-    tabela_saldo_final = tabela_saldo_final.applymap(formatar_moeda)
-
-
-
-    return valor_total_cte, cte_total_pis, cte_total_cofins, tabela_dinamica, tabela_pis_creditos, tabela_debito_pis, tabela_saldo_final, saldo_final_pis, saldo_final_cofins
 
 
 #planilhacte = 'relatorio cte geral abril.xlsx'

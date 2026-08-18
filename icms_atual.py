@@ -1,8 +1,16 @@
 import streamlit as st
 import pandas as pd
 from funcoes_apurar_icms import apurar_icms, tratar_dre_icms
-from funcoes_apurar_pis import formatar_moeda
-from funcoes_apurar_pis import apurar_pis
+from funcoes_apurar_pis import (
+    formatar_moeda,
+    apurar_pis,
+    CATEGORIAS_CREDITO,
+    creditar_pis_cofins,
+    calcular_creditos_categorias,
+    montar_resumo_pis,
+    rotulo_saldo,
+    valor_exibicao_saldo,
+)
 
 
 st.set_page_config(layout="wide")
@@ -256,21 +264,99 @@ def main():
 
 
         if planilhactes and planilhapis and planilha_dre_pis:
-            apurar = st.button('Apurar')
-            if apurar:
-                funcao = apurar_pis(planilhactes, planilhapis, planilha_dre_pis, mes)
-                valor_total_frete, valor_total_pis, valor_total_cofins, tabela_dinamica, tabela_pis_creditos, tabela_debito_pis, tabela_saldo_final, saldo_final_pis, saldo_final_cofins = funcao
+            if st.button('Apurar'):
+                st.session_state.pis_resultado = apurar_pis(planilhactes, planilhapis, planilha_dre_pis, mes)
+                st.session_state.pis_mes_apurado = mes
+
+            if st.session_state.get('pis_resultado'):
+                resultado = st.session_state.pis_resultado
+
+                st.markdown('#### Créditos por categoria')
+                st.caption('Informe o total das notas. O sistema calcula PIS 1,65% e COFINS 7,60% sobre esse valor.')
+
+                header_cols = st.columns([1, 3, 3, 3])
+                with header_cols[0]:
+                    st.write('')
+                for i, categoria in enumerate(CATEGORIAS_CREDITO):
+                    with header_cols[i + 1]:
+                        st.markdown(f'**{categoria}**')
+
+                bases_sp = {}
+                bases_sc = {}
+                for uf, destino in [('SP', bases_sp), ('SC', bases_sc)]:
+                    cols = st.columns([1, 3, 3, 3])
+                    with cols[0]:
+                        st.markdown(f'**{uf}**')
+                    for i, categoria in enumerate(CATEGORIAS_CREDITO):
+                        with cols[i + 1]:
+                            destino[categoria] = st.number_input(
+                                f'{uf} — {categoria}',
+                                min_value=0.0,
+                                step=0.01,
+                                format='%.2f',
+                                key=f'pis_cat_{uf}_{i}',
+                                label_visibility='collapsed',
+                            )
+
+                    cols = st.columns([1, 3, 3, 3])
+                    with cols[0]:
+                        st.caption('Valor creditado PIS')
+                    for i, categoria in enumerate(CATEGORIAS_CREDITO):
+                        with cols[i + 1]:
+                            pis_uf, _ = creditar_pis_cofins(destino[categoria])
+                            st.write(formatar_moeda(pis_uf))
+
+                    cols = st.columns([1, 3, 3, 3])
+                    with cols[0]:
+                        st.caption('Valor creditado COFINS')
+                    for i, categoria in enumerate(CATEGORIAS_CREDITO):
+                        with cols[i + 1]:
+                            _, cofins_uf = creditar_pis_cofins(destino[categoria])
+                            st.write(formatar_moeda(cofins_uf))
+
+                por_categoria, _, _, _, _ = calcular_creditos_categorias(bases_sp, bases_sc)
+                (
+                    tabela_pis_creditos,
+                    tabela_debito_pis,
+                    tabela_saldo_final,
+                    saldo_final_pis,
+                    saldo_final_cofins,
+                ) = montar_resumo_pis(resultado, por_categoria)
+
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.markdown('#### Resumo - Débito e Crédito') 
-                    st.table(tabela_dinamica)
+                    st.markdown('#### Resumo - Débito e Crédito')
+                    st.table(resultado['tabela_dinamica'])
                     st.table(tabela_pis_creditos)
                     st.table(tabela_debito_pis)
                     st.table(tabela_saldo_final)
                 with col2:
-                    st.markdown('#### Valores das guias de pagamentos')
-                    st.metric(label=':red[PIS]', value=formatar_moeda(saldo_final_pis))
-                    st.metric(label=':red[COFINS]', value=formatar_moeda(saldo_final_cofins))
+                    st.markdown(f"#### Resultado de {st.session_state.get('pis_mes_apurado', mes)}")
+                    st.metric(label=':red[' + rotulo_saldo('PIS', saldo_final_pis) + ']', value=valor_exibicao_saldo(saldo_final_pis))
+                    st.metric(label=':red[' + rotulo_saldo('COFINS', saldo_final_cofins) + ']', value=valor_exibicao_saldo(saldo_final_cofins))
+
+                    st.markdown('#### Crédito acumulado do mês anterior')
+                    acumulado_pis = st.number_input(
+                        'Informe o valor de crédito acumulado do mês anterior — PIS',
+                        min_value=0.0,
+                        step=0.01,
+                        format='%.2f',
+                        key='pis_acumulado_anterior',
+                    )
+                    acumulado_cofins = st.number_input(
+                        'Informe o valor de crédito acumulado do mês anterior — COFINS',
+                        min_value=0.0,
+                        step=0.01,
+                        format='%.2f',
+                        key='cofins_acumulado_anterior',
+                    )
+
+                    total_atualizado_pis = round(saldo_final_pis + acumulado_pis, 2)
+                    total_atualizado_cofins = round(saldo_final_cofins + acumulado_cofins, 2)
+
+                    st.markdown('#### Total atualizado')
+                    st.metric(label=':red[' + rotulo_saldo('PIS', total_atualizado_pis) + ']', value=valor_exibicao_saldo(total_atualizado_pis))
+                    st.metric(label=':red[' + rotulo_saldo('COFINS', total_atualizado_cofins) + ']', value=valor_exibicao_saldo(total_atualizado_cofins))
 
 
 
